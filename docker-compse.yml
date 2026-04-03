@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+
+  freeswitch:
+    image: signalwire/freeswitch:latest
+    container_name: freeswitch
+    network_mode: host
+    # host network is critical — RTP needs a wide port range
+    # and SIP needs to reach your corporate network directly
+    volumes:
+      - ./freeswitch/conf:/etc/freeswitch
+    environment:
+      - FREESWITCH_LOG_LEVEL=info
+    restart: unless-stopped
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: orchestrator
+    network_mode: host
+    # same host network so it can reach FreeSWITCH on localhost
+    volumes:
+      - ./test_cases:/app/test_cases
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    depends_on:
+      - freeswitch
+    restart: unless-stopped

@@ -1,0 +1,29 @@
+# Environment variables — never commit API keys
+.env
+
+# Logs — generated at runtime
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+*.egg-info/
+
+# Docker
+*.log
+
+# Piper TTS binary and models — too large for git
+orchestrator/piper/
+orchestrator/models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/

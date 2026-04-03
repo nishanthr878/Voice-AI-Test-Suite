@@ -1,0 +1,19 @@
+<include>
+  <context name="default">
+
+    <extension name="outbound_test">
+      <condition field="destination_number" expression="^sip:(.+)$">
+
+        <!-- Set caller identity -->
+        <action application="set" data="effective_caller_id_name=John Smith"/>
+        <action application="set" data="effective_caller_id_number=1000"/>
+
+        <!-- Park the call — hands control to Python via ESL -->
+        <!-- Python will then stream audio in/out -->
+        <action application="park"/>
+
+      </condition>
+    </extension>
+
+  </context>
+</include>
