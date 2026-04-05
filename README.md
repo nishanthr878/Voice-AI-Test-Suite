@@ -1,144 +1,174 @@
-# Voice AI Testing Suite — Implementation Journal
+# Voice AI Testing Suite
 
-## What We Built
-
-An automated voice AI testing suite that replaces manual call testing. A synthetic AI customer calls a target voice AI via SIP, conducts a full conversation, and produces structured pass/fail results with transcripts and scores.
+Automated testing tool that replaces manual call testing of voice AI systems. A synthetic AI customer calls your voice AI via SIP, conducts a full conversation, and produces structured pass/fail results with transcripts and scores.
 
 ---
 
-## Final Architecture
+## How It Works
 
 ```
-Orchestrator (Python/Flask) — Single Docker Container
-├── genesys.py       → OAuth2 auth + outbound call trigger
-├── sip_server.py    → Accepts SIP INVITE from Genesys
-├── rtp_handler.py   → Bidirectional RTP audio (G.711 ulaw)
-├── stt.py           → Groq Whisper STT (speech → text)
-├── tts.py           → Piper TTS with espeak fallback (text → speech)
-├── agent.py         → Groq/Llama 3.3 70B customer agent
-├── evaluator.py     → Rules engine + LLM judge (pass/fail)
-├── logger.py        → JSON log + plain text transcript
-├── main.py          → Flask API + call orchestration
-└── mock_genesys.py  → Mock Genesys for local testing
+You define a test case (intent + persona + checkpoints)
+        ↓
+System triggers Genesys to place an outbound call
+        ↓
+Genesys dials your voice AI number via Verizon
+        ↓
+Audio bridged to your SIP endpoint
+        ↓
+Synthetic customer conducts the conversation
+        ↓
+Post-call evaluation → PASS/FAIL + score + transcript
 ```
 
 ---
 
-## Tech Stack
+## Project Structure
 
-| Component | Tool | Reason |
+```
+voice-ai-tester/
+├── orchestrator/
+│   ├── genesys.py          # Genesys OAuth2 + outbound call trigger
+│   ├── sip_server.py       # Accepts SIP INVITE from Genesys
+│   ├── rtp_handler.py      # Bidirectional RTP audio (G.711)
+│   ├── stt.py              # Groq Whisper speech-to-text
+│   ├── tts.py              # Piper TTS text-to-speech
+│   ├── agent.py            # Groq LLM synthetic customer
+│   ├── evaluator.py        # Rules engine + LLM scoring
+│   ├── logger.py           # JSON log + transcript writer
+│   ├── main.py             # Flask API + orchestration
+│   ├── mock_genesys.py     # Mock for local testing
+│   ├── Dockerfile
+│   └── requirements.txt
+├── test_cases/
+│   └── return_flow_001.json
+├── logs/                   # Test run outputs (gitignored)
+├── docker-compose.yml
+├── .env                    # API keys (gitignored)
+└── .gitignore
+```
+
+---
+
+## Prerequisites
+
+- Docker Desktop (Windows/Mac)
+- Groq API key — free at [console.groq.com](https://console.groq.com)
+- Genesys Cloud credentials (for production use)
+
+---
+
+## Setup
+
+### 1. Clone and configure
+
+```bash
+git clone <repo>
+cd voice-ai-tester
+cp .env.example .env
+# Fill in your API keys in .env
+```
+
+### 2. Build and start
+
+```bash
+docker-compose up --build
+```
+
+### 3. Verify it's running
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected:
+```json
+{"status": "ok", "genesys_connected": true, "sip_listening": true}
+```
+
+---
+
+## Running Tests
+
+### With mock (no Genesys needed)
+
+Terminal 1 — start the orchestrator:
+```bash
+docker-compose up --build
+```
+
+Terminal 2 — start the mock Genesys:
+```bash
+docker exec -it orchestrator python mock_genesys.py
+```
+
+Terminal 3 — trigger a test:
+```bash
+curl -X POST http://localhost:8000/test/run \
+  -H "Content-Type: application/json" \
+  -d '{"test_id": "return_flow_001"}'
+```
+
+Poll for results:
+```bash
+curl http://localhost:8000/test/status
+```
+
+### With real Genesys
+
+Make sure `.env` has real Genesys credentials, then trigger a test the same way.
+
+---
+
+## API Reference
+
+| Method | Endpoint | Description |
 |---|---|---|
-| SIP | Custom Python SIP server | FreeSWITCH packaging failed on all platforms |
-| RTP | Raw UDP sockets (G.711 ulaw) | No external dependency needed |
-| STT | Groq Whisper API (whisper-large-v3-turbo) | Local Whisper too slow on CPU |
-| TTS | Piper TTS + espeak fallback | Local, open source, no API key |
-| LLM | Groq API (llama-3.3-70b-versatile) | Fast, free tier, high quality |
-| Framework | Flask | Simpler than FastAPI for POC |
-| Infrastructure | Docker (single container) | Portable, no environment issues |
+| GET | `/health` | Health check + credential verify |
+| POST | `/test/run` | Start a test run |
+| GET | `/test/status` | Poll current test status |
+| GET | `/test/cases` | List available test cases |
+| GET | `/logs` | List all log files |
+| GET | `/logs/<filename>` | Fetch specific log |
 
 ---
 
-## Key Design Decisions
+## Writing Test Cases
 
-### Why not FreeSWITCH?
-FreeSWITCH was the original plan. Abandoned because:
-- SignalWire repo requires paid auth token
-- Ubuntu apt repo doesn't have FreeSWITCH packages
-- Docker images are either dead or behind paywall
-- Replaced with a custom Python SIP server — simpler, no external deps
-
-### Why not Twilio/Deepgram/ElevenLabs?
-- Twilio: US call restrictions + licensing constraints
-- Deepgram/ElevenLabs: paid APIs, not available in testing environment
-- Replaced with Groq free tier (STT + LLM) and Piper TTS (local)
-
-### Why Groq over local Ollama?
-- Groq runs Llama 3.3 70B at ~500 tokens/second
-- No GPU required on developer machine
-- Free tier sufficient for POC volume
-- Local Llama via Ollama requires 48GB+ VRAM for 70B quality
-
-### SIP Architecture
-Instead of FreeSWITCH ESL, we wrote a minimal SIP server in Python:
-- Listens on UDP port 5060
-- Accepts INVITE from Genesys
-- Sends 100 Trying → 180 Ringing → 200 OK
-- Extracts RTP endpoint from SDP body
-- Handles BYE to detect call end
-
-### RTP Audio Pipeline
-```
-Genesys RTP (G.711 ulaw) → ulaw_to_pcm() → UtteranceBuffer
-→ silence detection (800ms threshold)
-→ Groq Whisper STT → text
-→ Groq LLM agent → response text
-→ Piper TTS → PCM audio → pcm_to_ulaw()
-→ RTP packets → Genesys
-```
-
-### Genesys Integration
-- OAuth2 client credentials flow for API auth
-- Outbound call trigger via POST /api/v2/conversations/calls
-- Genesys places the PSTN call via Verizon carrier
-- Audio bridged to our SIP endpoint via corporate SIP trunk
-
----
-
-## Call Flow
-
-```
-1. POST /test/run → load test case JSON
-2. Orchestrator → Genesys API → trigger outbound call
-3. Genesys → dials US number → bridges audio → SIP INVITE to us
-4. SIP server accepts → 200 OK → RTP stream established
-5. Loop per turn:
-   a. RTP audio arrives from voice AI
-   b. UtteranceBuffer detects end of utterance (800ms silence)
-   c. Groq Whisper transcribes full utterance
-   d. Keyword checkpoints checked inline (e.g. "email" → hit auth endpoint)
-   e. Groq LLM agent decides response
-   f. Piper TTS synthesizes audio
-   g. Audio sent back over RTP
-6. Agent signals INTENT_COMPLETE or INTENT_FAILED
-7. SIP BYE sent → call ends
-8. Post-call: Evaluator runs LLM + rules scoring
-9. Logger writes JSON + transcript to disk
-```
-
----
-
-## Test Case Schema
+Create a JSON file in `test_cases/`. The filename is the `test_id`.
 
 ```json
 {
-  "test_id": "return_flow_001",
-  "name": "Order Return Flow",
+  "test_id": "your_test_id",
+  "name": "Human readable name",
   "max_turns": 10,
+
   "persona": {
-    "name": "John Smith",
-    "order_number": "ORD-789456",
-    "item": "Blue Wireless Headphones",
+    "name": "Customer Name",
+    "order_number": "ORD-123456",
+    "item": "Product Name",
     "quantity": 1,
-    "return_reason": "Product is defective, stopped working after 2 days"
+    "return_reason": "Reason for return"
   },
+
   "auth": {
-    "endpoint": "http://internal-endpoint/confirm",
+    "endpoint": "http://your-auth-endpoint/confirm",
     "method": "POST",
     "trigger_phrase": "sent you an email",
-    "body": { "order_number": "ORD-789456" }
+    "body": { "order_number": "ORD-123456" }
   },
+
   "checkpoints": [
     {
       "id": "CP1",
       "name": "Item Verification",
-      "description": "Voice AI correctly reads back item and quantity",
+      "description": "Voice AI reads back correct item and quantity",
       "type": "llm"
     },
     {
       "id": "CP2",
       "name": "Auth Email Triggered",
       "type": "keyword",
-      "keywords": ["email", "sent you", "verify", "verification"]
+      "keywords": ["email", "sent you", "verify"]
     },
     {
       "id": "CP3",
@@ -147,131 +177,48 @@ Genesys RTP (G.711 ulaw) → ulaw_to_pcm() → UtteranceBuffer
       "type": "llm"
     }
   ],
+
   "success_criteria": "All checkpoints must pass",
   "timeout_seconds": 120
 }
 ```
 
----
+### Checkpoint types
 
-## Output Formats
+**`keyword`** — fast, inline. Fires mid-call when any keyword appears in voice AI speech.
 
-### JSON Log (`logs/return_flow_001_YYYYMMDD_HHMMSS.json`)
-```json
-{
-  "test_id": "return_flow_001",
-  "run_id": "20260405_172217",
-  "result": "PASS",
-  "score": 8.5,
-  "checkpoints": {
-    "CP1": { "passed": true, "reason": "Voice AI correctly stated item and quantity" },
-    "CP2": { "passed": true, "reason": "Keyword 'email' found" },
-    "CP3": { "passed": true, "reason": "Return confirmation detected" }
-  },
-  "transcript": [
-    { "speaker": "VOICE_AI", "text": "Hello, how can I help?" },
-    { "speaker": "CUSTOMER", "text": "I want to return an item." }
-  ]
-}
-```
-
-### Plain Text Transcript (`logs/return_flow_001_YYYYMMDD_HHMMSS_transcript.txt`)
-
----
-
-## Problems Hit and Solutions
-
-### 1. FreeSWITCH packaging completely broken
-**Problem:** Every public Docker image dead or paywalled. SignalWire repo requires token.
-**Solution:** Wrote custom Python SIP server from scratch. Handles INVITE/ACK/BYE, extracts SDP, fires callbacks. No external SIP server needed.
-
-### 2. SIP library issues
-**Problem:** `aioSIP==0.3.0` doesn't exist. `sipsimple` native deps fail on Docker.
-**Solution:** Removed all SIP libraries. Pure Python UDP socket implementation.
-
-### 3. Piper TTS download URL broken
-**Problem:** Original Piper binary URL 404. New repo uses Python wheel not binary.
-**Solution:** Install via pip (`piper-tts==1.4.2`). Piper synthesize writing empty WAV — espeak fallback kicks in.
-
-### 4. Whisper model too slow
-**Problem:** Local `base` model takes 200+ seconds per transcription on CPU.
-**Solution:** Switched to Groq Whisper API (`whisper-large-v3-turbo`). Fast, free tier.
-
-### 5. STT transcribing per chunk not per utterance
-**Problem:** `UtteranceBuffer` not wired correctly. Every 320-byte RTP packet sent to STT directly.
-**Solution:** Fixed buffer — accumulates chunks, fires STT only after 800ms silence.
-
-### 6. Docker networking on Windows
-**Problem:** `network_mode: host` doesn't work on Windows Docker Desktop.
-**Solution:** Use bridge network + port mapping. Use container names for inter-container communication.
-
-### 7. Groq model decommissioned
-**Problem:** `llama-3.1-70b-versatile` shut down January 2025.
-**Solution:** Updated to `llama-3.3-70b-versatile`.
-
-### 8. Mock timing issue
-**Problem:** Mock sends SIP INVITE before orchestrator SIP server is ready.
-**Solution:** Moved SIP server startup to `initialize()` at Flask startup — always listening before any test runs.
-
----
-
-## Current Status (POC)
-
-### Working
-- Full SIP handshake (INVITE → 100 → 180 → 200 OK → ACK → BYE)
-- Bidirectional RTP audio stream
-- Groq Whisper STT transcribing voice AI utterances
-- Groq LLM agent driving conversation with persona
-- espeak TTS sending customer audio
-- Post-call evaluator (rules + LLM scoring)
-- JSON logs + transcript files written per run
-- Flask API (start test, poll status, fetch logs)
-- Mock Genesys for local testing without real infrastructure
-
-### Known Issues / TODO
-- Piper TTS synthesize() returns empty WAV — espeak fallback always used
-- STT transcribing per 320-byte chunk instead of per full utterance (UtteranceBuffer fix needed)
-- Mock conversation doesn't wait for customer audio before progressing
-- Groq Whisper rate limit (20 RPM) hit during rapid-fire chunk transcription
-- UI not built yet
-
-### Next Steps
-1. Fix UtteranceBuffer — accumulate chunks, fire STT once per utterance
-2. Fix Piper TTS — WAV always empty, debug synthesize() write path
-3. Fix mock — wait for customer audio before sending next turn
-4. Build React UI dashboard
-5. Get Genesys credentials from admin
-6. Test with real SIP endpoint
+**`llm`** — semantic, post-call. LLM judges whether the checkpoint was satisfied based on full transcript.
 
 ---
 
 ## Environment Variables
 
 ```env
-# Genesys Auth
+# Genesys (required for production)
 GENESYS_CLIENT_ID=
 GENESYS_CLIENT_SECRET=
 GENESYS_REGION=mypurecloud.com
-
-# Outbound Call
 GENESYS_QUEUE_ID=
 GENESYS_CALLER_ID=
+
+# For mock testing
+GENESYS_REGION=127.0.0.1:9000
 
 # SIP + RTP
 LOCAL_IP=127.0.0.1
 YOUR_SIP_PORT=5060
 RTP_LOCAL_PORT=10000
 
-# Target
-VOICE_AI_PHONE_NUMBER=
+# Target number
+VOICE_AI_PHONE_NUMBER=+1XXXXXXXXXX
 
-# LLM + STT
-GROQ_API_KEY=
+# LLM + STT (required)
+GROQ_API_KEY=your_key_here
 
 # TTS
 PIPER_MODEL=/app/models/en_US-lessac-medium.onnx
 
-# Logging
+# Storage
 LOG_DIR=/app/logs
 TEST_CASES_DIR=/app/test_cases
 CALL_CONNECT_TIMEOUT=30
@@ -279,16 +226,45 @@ CALL_CONNECT_TIMEOUT=30
 
 ---
 
-## Dependencies
+## Output
 
-```txt
-flask==3.0.3
-requests==2.31.0
-groq==0.9.0
-numpy==1.26.4
-aiofiles==23.2.1
-python-dotenv==1.0.1
-docker==7.0.0
-piper-tts==1.4.2
-httpx==0.27.0
-```
+Each test run produces two files in `logs/`:
+
+**`{test_id}_{run_id}.json`** — structured log with full transcript, checkpoint results, score, and metadata.
+
+**`{test_id}_{run_id}_transcript.txt`** — human readable conversation transcript with checkpoint results and evaluation summary.
+
+---
+
+## Known Issues (POC)
+
+- Piper TTS falls back to espeak — Piper synthesize() writes empty WAV
+- STT transcribes per RTP chunk instead of per full utterance — UtteranceBuffer fix pending
+- Mock voice AI doesn't wait for customer audio between turns
+- Groq Whisper free tier rate limit (20 RPM) hit under rapid transcription
+- React UI not yet built — use API directly
+
+---
+
+## Genesys Admin Requirements
+
+To use with real Genesys:
+
+1. OAuth2 client with `conversation:calls:create` permission
+2. Outbound Architect flow that dials external number and bridges audio to your SIP endpoint
+3. SIP trunk pointing to your machine IP on port 5060
+4. RTP ports 10000-10100 UDP open between Genesys and your machine
+
+---
+
+## Tech Stack
+
+| Layer | Tool |
+|---|---|
+| SIP | Custom Python UDP server |
+| RTP | Raw UDP sockets (G.711 ulaw) |
+| STT | Groq Whisper API |
+| TTS | Piper TTS + espeak fallback |
+| LLM | Groq (Llama 3.3 70B) |
+| API | Flask |
+| Infrastructure | Docker |
