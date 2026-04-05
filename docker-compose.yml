@@ -1,0 +1,16 @@
+services:
+  orchestrator:
+    build: ./orchestrator
+    container_name: orchestrator
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10100:10000-10100/udp"
+      - "8000:8000"
+      - "9000:9000"
+    volumes:
+      - ./test_cases:/app/test_cases
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    restart: unless-stopped

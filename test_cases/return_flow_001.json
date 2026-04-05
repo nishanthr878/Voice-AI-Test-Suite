@@ -1,0 +1,45 @@
+{
+  "test_id": "return_flow_001",
+  "name": "Order Return Flow",
+  "description": "Tests end-to-end return initiation including auth",
+  "max_turns": 10,
+
+  "persona": {
+    "name": "John Smith",
+    "order_number": "ORD-789456",
+    "item": "Blue Wireless Headphones",
+    "quantity": 1,
+    "return_reason": "Product is defective, stopped working after 2 days"
+  },
+
+  "auth": {
+    "endpoint": "http://placeholder/confirm",
+    "method": "POST",
+    "trigger_phrase": "sent you an email",
+    "body": { "order_number": "ORD-789456" }
+  },
+
+  "checkpoints": [
+    {
+      "id": "CP1",
+      "name": "Item Verification",
+      "description": "Voice AI correctly reads back item name and quantity after order number is given",
+      "type": "llm"
+    },
+    {
+      "id": "CP2",
+      "name": "Auth Email Triggered",
+      "type": "keyword",
+      "keywords": ["email", "sent you", "verify", "verification"]
+    },
+    {
+      "id": "CP3",
+      "name": "Return Confirmed",
+      "description": "Voice AI confirms return is initiated before ending call",
+      "type": "llm"
+    }
+  ],
+
+  "success_criteria": "All checkpoints must pass",
+  "timeout_seconds": 120
+}
