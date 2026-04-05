@@ -1,22 +1,9 @@
-# API framework
 flask==3.0.3
-
-# FreeSWITCH ESL — Python talks to FreeSWITCH
-ESL==1.0.0
-
-# LLM — customer agent + evaluator
-groq==0.9.0
-
-# Speech to text — transcribes voice AI audio
-faster-whisper==1.0.3
-
-# Audio I/O
-sounddevice==0.4.6
-numpy==1.26.4
-
-# HTTP — hitting auth endpoint mid-call
 requests==2.31.0
+groq==0.9.0
+numpy==1.26.4
 aiofiles==23.2.1
-
-# Config
 python-dotenv==1.0.1
+docker==7.0.0
+piper-tts==1.4.2
+httpx==0.27.0
