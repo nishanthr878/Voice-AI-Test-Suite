@@ -1,6 +1,5 @@
 import os
 import threading
-import time
 import json
 import requests
 from flask import Flask, jsonify, request
@@ -47,7 +46,7 @@ def run_test(test_case: dict):
     """
     Main test execution function.
     Runs in background thread.
-    Dials vendor SIP URI directly — no Genesys API needed.
+    Dials vendor SIP URI directly via TLS + digest auth.
     """
     test_id = test_case["test_id"]
     logger = TestLogger(test_id)
@@ -65,15 +64,20 @@ def run_test(test_case: dict):
 
         target_sip_uri = os.getenv("TARGET_SIP_URI")
         local_ip = os.getenv("LOCAL_IP", "0.0.0.0")
-        local_sip_port = int(os.getenv("YOUR_SIP_PORT", "5062"))
+        local_sip_port = int(os.getenv("YOUR_SIP_PORT", "5060"))
 
         if not target_sip_uri:
             raise Exception("TARGET_SIP_URI not set in .env")
 
-        print(f"[MAIN] Dialing {target_sip_uri} directly")
+        print(f"[MAIN] Dialing {target_sip_uri} directly", flush=True)
         logger.log_call_start(target_sip_uri, None)
 
-        sip_client = SIPClient(local_ip, local_sip_port)
+        sip_client = SIPClient(
+            local_ip=local_ip,
+            local_port=local_sip_port,
+            username=os.getenv("SIP_USERNAME"),
+            password=os.getenv("SIP_PASSWORD")
+        )
         rtp_ip, rtp_port = sip_client.dial(target_sip_uri)
 
         if not rtp_ip:
@@ -83,17 +87,15 @@ def run_test(test_case: dict):
 
         # ----------------------------------------------------------------
         # Step 2: Start RTP handler immediately
-        # No waiting — we already connected
         # ----------------------------------------------------------------
 
         local_rtp_port = int(os.getenv("RTP_LOCAL_PORT", "10000"))
         utterance_buf = UtteranceBuffer(stt_engine)
 
         def on_audio_chunk(pcm_bytes: bytes):
-            """Per RTP packet — feeds buffer, fires on complete utterance."""
             result = utterance_buf.add_chunk(pcm_bytes)
             if result and result.strip():
-                print(f"[MAIN] Voice AI said: {result}")
+                print(f"[MAIN] Voice AI said: {result}", flush=True)
                 current_utterance["text"] = result
                 current_utterance["ready"].set()
 
@@ -106,8 +108,8 @@ def run_test(test_case: dict):
         rtp_handler.start()
         logger.log_call_connected()
 
-        print(f"[MAIN] Call connected — RTP: {rtp_ip}:{rtp_port}")
-        print("[MAIN] Starting conversation")
+        print(f"[MAIN] Call connected — RTP: {rtp_ip}:{rtp_port}", flush=True)
+        print("[MAIN] Starting conversation", flush=True)
 
         # ----------------------------------------------------------------
         # Step 3: Comfort noise while waiting for greeting
@@ -129,12 +131,12 @@ def run_test(test_case: dict):
             and not intent_complete
             and not intent_failed
         ):
-            print(f"[MAIN] Turn {turn + 1} — waiting for voice AI...")
+            print(f"[MAIN] Turn {turn + 1} — waiting for voice AI...", flush=True)
             current_utterance["ready"].clear()
             current_utterance["text"] = None
 
             if not current_utterance["ready"].wait(timeout=15):
-                print("[MAIN] Timeout waiting for voice AI")
+                print("[MAIN] Timeout waiting for voice AI", flush=True)
                 logger.log_event("TIMEOUT", "No audio from voice AI")
                 intent_failed = True
                 break
@@ -154,7 +156,10 @@ def run_test(test_case: dict):
                         kw in voice_ai_text.lower()
                         for kw in keywords
                     ):
-                        print(f"[MAIN] Checkpoint {checkpoint['id']} hit")
+                        print(
+                            f"[MAIN] Checkpoint {checkpoint['id']} hit",
+                            flush=True
+                        )
                         logger.log_event(
                             "CHECKPOINT_HIT",
                             f"{checkpoint['id']}: keyword found"
@@ -180,7 +185,7 @@ def run_test(test_case: dict):
             silence_thread.join()
 
             logger.log_turn("CUSTOMER", response_text)
-            print(f"[MAIN] Customer says: {response_text}")
+            print(f"[MAIN] Customer says: {response_text}", flush=True)
 
             audio = tts_engine.synthesize(response_text)
             rtp_handler.send_audio(audio)
@@ -200,7 +205,6 @@ def run_test(test_case: dict):
         logger.log_call_end(end_reason)
         logger.log_event("CALL_END_REASON", end_reason)
 
-        # Hang up
         if sip_client:
             sip_client.hangup()
 
@@ -211,7 +215,7 @@ def run_test(test_case: dict):
         # Step 6: Evaluate
         # ----------------------------------------------------------------
 
-        print("[MAIN] Running post-call evaluation...")
+        print("[MAIN] Running post-call evaluation...", flush=True)
 
         eval_result = evaluator.evaluate(
             transcript=logger.get_transcript_for_evaluator(),
@@ -234,14 +238,17 @@ def run_test(test_case: dict):
         current_test["running"] = False
 
     except Exception as e:
-        print(f"[MAIN] Test failed: {e}")
+        print(f"[MAIN] Test failed: {e}", flush=True)
         logger.log_event("ERROR", str(e))
         logger.log_call_end("ERROR")
         current_test["error"] = str(e)
         current_test["running"] = False
 
         if sip_client:
-            sip_client.hangup()
+            try:
+                sip_client.hangup()
+            except Exception:
+                pass
         if rtp_handler:
             rtp_handler.stop()
 
@@ -252,7 +259,7 @@ def _hit_auth_endpoint(auth_config: dict, logger: TestLogger) -> bool:
     body = auth_config.get("body", {})
     headers = auth_config.get("headers", {})
 
-    print(f"[MAIN] Hitting auth endpoint: {endpoint}")
+    print(f"[MAIN] Hitting auth endpoint: {endpoint}", flush=True)
 
     try:
         if method == "POST":
@@ -272,7 +279,7 @@ def _hit_auth_endpoint(auth_config: dict, logger: TestLogger) -> bool:
         return success
 
     except Exception as e:
-        print(f"[MAIN] Auth endpoint error: {e}")
+        print(f"[MAIN] Auth endpoint error: {e}", flush=True)
         logger.log_event("AUTH_FAILED", str(e))
         return False
 
@@ -288,7 +295,7 @@ def health():
         "status": "ok",
         "target_sip_uri": target,
         "local_ip": os.getenv("LOCAL_IP"),
-        "sip_port": os.getenv("YOUR_SIP_PORT", "5062")
+        "sip_port": os.getenv("YOUR_SIP_PORT", "5060")
     })
 
 
@@ -312,3 +319,113 @@ def run_test_route():
     current_test["test_id"] = test_id
     current_test["result"] = None
     current_test["error"] = None
+
+    thread = threading.Thread(
+        target=run_test,
+        args=(test_case,),
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({
+        "status": "test_started",
+        "test_id": test_id
+    })
+
+
+@app.route("/test/status", methods=["GET"])
+def test_status():
+    return jsonify({
+        "running": current_test["running"],
+        "test_id": current_test["test_id"],
+        "result": current_test["result"],
+        "error": current_test["error"]
+    })
+
+
+@app.route("/test/cases", methods=["GET"])
+def list_test_cases():
+    test_dir = os.getenv("TEST_CASES_DIR", "/app/test_cases")
+    if not os.path.exists(test_dir):
+        return jsonify({"test_cases": []})
+    cases = [
+        f.replace(".json", "")
+        for f in os.listdir(test_dir)
+        if f.endswith(".json")
+    ]
+    return jsonify({"test_cases": cases})
+
+
+@app.route("/logs", methods=["GET"])
+def list_logs():
+    log_dir = os.getenv("LOG_DIR", "/app/logs")
+    if not os.path.exists(log_dir):
+        return jsonify({"logs": []})
+    logs = sorted([
+        f for f in os.listdir(log_dir)
+        if f.endswith(".json")
+    ], reverse=True)
+    return jsonify({"logs": logs})
+
+
+@app.route("/logs/<filename>", methods=["GET"])
+def get_log(filename: str):
+    log_dir = os.getenv("LOG_DIR", "/app/logs")
+    path = os.path.join(log_dir, filename)
+    if not os.path.exists(path):
+        return jsonify({"error": "Log not found"}), 404
+    with open(path) as f:
+        return jsonify(json.load(f))
+
+
+@app.route("/test/audio", methods=["GET"])
+def test_audio():
+    from rtp_handler import RTPPacket
+
+    test_text = "Hello, I would like to return my order please."
+    pcm_bytes = tts_engine.synthesize(test_text)
+    silent_raw = bool(stt_engine.is_silent(pcm_bytes[:320]))
+
+    ulaw_bytes = RTPPacket.pcm_to_ulaw(pcm_bytes)
+    decoded_pcm = RTPPacket.ulaw_to_pcm(ulaw_bytes)
+    silent_ulaw = bool(stt_engine.is_silent(decoded_pcm[:320]))
+
+    text_raw = stt_engine.transcribe(pcm_bytes)
+    text_ulaw = stt_engine.transcribe(decoded_pcm)
+
+    return jsonify({
+        "tts_bytes": len(pcm_bytes),
+        "silent_raw": silent_raw,
+        "silent_ulaw": silent_ulaw,
+        "transcription_raw": text_raw,
+        "transcription_ulaw": text_ulaw
+    })
+
+
+# ----------------------------------------------------------------
+# Startup
+# ----------------------------------------------------------------
+
+def initialize():
+    global stt_engine, tts_engine
+
+    print("[MAIN] Initializing components...", flush=True)
+
+    stt_engine = STTEngine()
+    print("[MAIN] STT ready", flush=True)
+
+    tts_engine = TTSEngine()
+    print("[MAIN] TTS ready", flush=True)
+
+    print(
+        f"[MAIN] Target SIP: {os.getenv('TARGET_SIP_URI', 'NOT SET')}",
+        flush=True
+    )
+    print("[MAIN] All components ready", flush=True)
+
+
+if __name__ == "__main__":
+    print("[MAIN] Starting...", flush=True)
+    initialize()
+    print("[MAIN] Starting Flask on port 8000", flush=True)
+    app.run(host="0.0.0.0", port=8000, debug=False)
