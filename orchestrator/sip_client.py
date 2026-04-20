@@ -153,13 +153,11 @@ class SIPClient:
             print(f"[SIP CLIENT] Recv error: {e}")
             return ""
 
-    def _handle_response(
-        self,
-        sip_uri: str
-    ) -> tuple[Optional[str], Optional[int]]:
+    def _handle_response(self,sip_uri: str) -> tuple[Optional[str], Optional[int]]:
         """
         Handle SIP responses.
         Handles 407 digest auth challenge automatically.
+        Uses case-insensitive matching for Twilio compatibility.
         """
         while True:
             raw = self._recv()
@@ -167,77 +165,88 @@ class SIPClient:
                 print("[SIP CLIENT] No response received")
                 return None, None
 
-            print(f"[SIP CLIENT] Received: {raw.split(chr(13))[0]}")
+            first_line = raw.split("\r\n")[0]
+            print(f"[SIP CLIENT] Received: {first_line}", flush=True)
 
-            raw_upper = raw.upper()
-
-            if "100 Trying" in raw_upper:
-                print("[SIP CLIENT] 100 Trying")
+            # Extract status code — always a 3-digit number
+            parts = first_line.split(" ")
+            if len(parts) < 2:
                 continue
 
-            elif "180 Ringing" in raw_upper:
-                print("[SIP CLIENT] 180 Ringing — voice AI answering")
+            try:
+                status_code = int(parts[1])
+            except ValueError:
                 continue
 
-            elif "200 OK" in raw_upper:
-                print("[SIP CLIENT] 200 OK — call connected")
+            if status_code == 100:
+                print("[SIP CLIENT] 100 Trying", flush=True)
+                continue
 
-                # Extract remote tag
+            elif status_code == 180:
+                print("[SIP CLIENT] 180 Ringing", flush=True)
+                continue
+
+            elif status_code == 183:
+                print("[SIP CLIENT] 183 Session Progress", flush=True)
+                continue
+
+            elif status_code == 200:
+                print("[SIP CLIENT] 200 OK — call connected", flush=True)
+
                 for line in raw.split("\r\n"):
                     if line.lower().startswith("to:") and "tag=" in line:
                         self.remote_tag = line.split("tag=")[-1].strip()
 
-                # Extract RTP info
                 rtp_ip, rtp_port = self._parse_sdp(raw)
                 self.rtp_ip = rtp_ip
                 self.rtp_port = rtp_port
-                print(f"[SIP CLIENT] Voice AI RTP: {rtp_ip}:{rtp_port}")
+                print(f"[SIP CLIENT] Voice AI RTP: {rtp_ip}:{rtp_port}", flush=True)
 
-                # Send ACK
                 ack = self._build_ack()
                 self._send(ack)
-                print("[SIP CLIENT] ACK sent — audio starting")
+                print("[SIP CLIENT] ACK sent — audio starting", flush=True)
 
                 self.call_active = True
                 return rtp_ip, rtp_port
 
-            elif "407 Proxy Authentication Required" in raw_upper or "401 Unauthorized" in raw_upper:
-                print("[SIP CLIENT] Auth challenge received — responding")
+            elif status_code in (401, 407):
+                print(f"[SIP CLIENT] {status_code} Auth challenge — responding", flush=True)
 
-                # Extract challenge
                 auth_header = self._extract_auth_challenge(raw)
                 if not auth_header:
                     print("[SIP CLIENT] Could not parse auth challenge")
                     return None, None
 
-                # Rebuild INVITE with credentials
                 self.cseq += 1
                 invite_with_auth = self._build_invite_with_auth(
                     sip_uri,
                     auth_header,
-                    "407" in raw
+                    status_code == 407
                 )
                 self._send(invite_with_auth)
-                print("[SIP CLIENT] Re-sent INVITE with credentials")
+                print("[SIP CLIENT] Re-sent INVITE with credentials", flush=True)
                 continue
 
-            elif "403 Forbidden" in raw_upper:
+            elif status_code == 403:
                 print("[SIP CLIENT] 403 Forbidden — wrong credentials")
                 return None, None
 
-            elif "404 Not Found" in raw_upper:
+            elif status_code == 404:
                 print("[SIP CLIENT] 404 — SIP URI not found")
                 return None, None
 
-            elif "486 Busy" in raw_upper:
+            elif status_code == 486:
                 print("[SIP CLIENT] 486 Busy")
                 return None, None
 
-            else:
-                # Unknown response
-                status = raw.split("\r\n")[0] if raw else "unknown"
-                print(f"[SIP CLIENT] Unexpected response: {status}")
+            elif status_code >= 400:
+                print(f"[SIP CLIENT] Call failed: {status_code} {' '.join(parts[2:])}")
                 return None, None
+
+            else:
+                print(f"[SIP CLIENT] Unhandled status: {status_code}")
+                continue
+
 
     def _extract_auth_challenge(self, raw: str) -> Optional[dict]:
         """
