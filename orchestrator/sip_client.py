@@ -169,15 +169,17 @@ class SIPClient:
 
             print(f"[SIP CLIENT] Received: {raw.split(chr(13))[0]}")
 
-            if "100 Trying" in raw:
+            raw_upper = raw.upper()
+
+            if "100 Trying" in raw_upper:
                 print("[SIP CLIENT] 100 Trying")
                 continue
 
-            elif "180 Ringing" in raw:
+            elif "180 Ringing" in raw_upper:
                 print("[SIP CLIENT] 180 Ringing — voice AI answering")
                 continue
 
-            elif "200 OK" in raw:
+            elif "200 OK" in raw_upper:
                 print("[SIP CLIENT] 200 OK — call connected")
 
                 # Extract remote tag
@@ -199,8 +201,7 @@ class SIPClient:
                 self.call_active = True
                 return rtp_ip, rtp_port
 
-            elif "407 Proxy Authentication Required" in raw or \
-                 "401 Unauthorized" in raw:
+            elif "407 Proxy Authentication Required" in raw_upper or "401 Unauthorized" in raw_upper:
                 print("[SIP CLIENT] Auth challenge received — responding")
 
                 # Extract challenge
@@ -220,15 +221,15 @@ class SIPClient:
                 print("[SIP CLIENT] Re-sent INVITE with credentials")
                 continue
 
-            elif "403 Forbidden" in raw:
+            elif "403 Forbidden" in raw_upper:
                 print("[SIP CLIENT] 403 Forbidden — wrong credentials")
                 return None, None
 
-            elif "404 Not Found" in raw:
+            elif "404 Not Found" in raw_upper:
                 print("[SIP CLIENT] 404 — SIP URI not found")
                 return None, None
 
-            elif "486 Busy" in raw:
+            elif "486 Busy" in raw_upper:
                 print("[SIP CLIENT] 486 Busy")
                 return None, None
 
